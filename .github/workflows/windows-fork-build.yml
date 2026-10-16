@@ -1,0 +1,64 @@
+name: Windows fork build (unsigned)
+
+# Builds an unsigned Windows NSIS installer on a GitHub-hosted runner, for a
+# personal fork. Auto-updates are switched off for this build so the
+# developer's signed updates cannot replace the patched app.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-fork
+
+      - name: Strawberry Perl for vendored OpenSSL
+        shell: pwsh
+        run: |
+          choco install strawberryperl -y --no-progress
+          "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
+          "OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build installer
+        shell: bash
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis \
+            --config '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"endpoints":[]}}}'
+
+      - name: Collect installer
+        shell: bash
+        run: |
+          mkdir -p out
+          cp target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe out/ || cp "$CARGO_TARGET_DIR"/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe out/
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rbxport-windows-unsigned
+          path: out/
+          retention-days: 30
