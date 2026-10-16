@@ -23,6 +23,8 @@ pub fn dropped_file_paths(names: Vec<String>) -> Result<Vec<String>, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        // Reached only when the page has no WebView2 bridge to ask.
+        tracing::warn!(files = names.len(), "drop paths: page fell back to the Tauri command");
         let _ = names;
         Err("This platform did not provide the dropped files' locations.".into())
     }
@@ -174,13 +176,17 @@ mod webview2 {
             // SAFETY: WebView2 calls this handler on the controller's thread
             // with live arguments; `take_pwstr` frees the returned string.
             unsafe { args.WebMessageAsJson(&raw mut json)? };
-            let Some(id) = request_id(&take_pwstr(json)) else {
+            let body = take_pwstr(json);
+            let Some(id) = request_id(&body) else {
                 return Ok(());
             };
+            tracing::info!(%id, "drop paths: request received");
             // SAFETY: as above.
             let answer = reply(&id, unsafe { dropped_paths(&args) });
             // SAFETY: as above.
-            unsafe { sender.PostWebMessageAsJson(&HSTRING::from(answer)) }
+            let sent = unsafe { sender.PostWebMessageAsJson(&HSTRING::from(answer)) };
+            tracing::info!(ok = sent.is_ok(), "drop paths: reply posted");
+            sent
         }));
         let mut token = 0_i64;
         // SAFETY: the caller is on the controller's thread; the handler lives
