@@ -97,9 +97,16 @@ fn validate_paths(names: &[String], paths: Vec<String>) -> Result<Vec<String>, S
 
 /// The id of a page message asking for dropped files' paths, or `None` for
 /// any other message (Tauri's own IPC, for one).
+///
+/// The page posts the request as a string (see `webview2FilePaths`), which
+/// `WebMessageAsJson` hands over as a JSON string literal, so one level of
+/// string is unwrapped. A bare object is still accepted.
 #[cfg(any(windows, test))]
 fn request_id(message_json: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(message_json).ok()?;
+    let mut value: serde_json::Value = serde_json::from_str(message_json).ok()?;
+    if let serde_json::Value::String(inner) = &value {
+        value = serde_json::from_str(inner).ok()?;
+    }
     value.get(REQUEST_KEY)?.as_str().map(str::to_owned)
 }
 
@@ -111,7 +118,10 @@ fn reply(id: &str, paths: Result<Vec<String>, String>) -> String {
         Ok(paths) if !paths.is_empty() && paths.iter().all(|path| !path.is_empty()) => {
             serde_json::json!({ REQUEST_KEY: id, "paths": paths })
         }
-        Ok(_) => serde_json::json!({ REQUEST_KEY: id, "error": UNAVAILABLE }),
+        Ok(paths) => {
+            tracing::warn!(count = paths.len(), "WebView2 gave no path for some dropped files");
+            serde_json::json!({ REQUEST_KEY: id, "error": UNAVAILABLE })
+        }
         Err(error) => serde_json::json!({ REQUEST_KEY: id, "error": error }),
     };
     answer.to_string()
@@ -119,8 +129,11 @@ fn reply(id: &str, paths: Result<Vec<String>, String>) -> String {
 
 /// Answer the page's requests for dropped files' paths on Windows.
 ///
-/// The request is a JSON object, not a string, so wry's own handler (which
-/// reads only string messages) skips it and Tauri never sees it.
+/// wry registers its own `WebMessageReceived` handler first. An object
+/// message makes that handler fail (`TryGetWebMessageAsString`), and this one
+/// then never answered, so the page posts the request as a string: wry
+/// passes it to Tauri, which ignores it as a malformed invoke, and this
+/// handler answers it.
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub fn install_webview2_bridge(window: &tauri::WebviewWindow) {
@@ -213,6 +226,10 @@ mod tests {
     #[test]
     fn answers_only_requests_for_dropped_files() {
         assert_eq!(request_id(r#"{"rbxportDroppedFiles":"7f"}"#), Some("7f".into()));
+        // The page posts the request as a string, so it arrives as a JSON
+        // string literal holding the object.
+        assert_eq!(request_id(r#""{\"rbxportDroppedFiles\":\"7f\"}""#), Some("7f".into()));
+        assert_eq!(request_id(r#""not json""#), None);
         // Tauri's own IPC and anything else the page posts are not ours.
         assert_eq!(request_id(r#""{\"cmd\":\"x\"}""#), None);
         assert_eq!(request_id(r#"{"cmd":"dropped_file_paths"}"#), None);

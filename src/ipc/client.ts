@@ -89,7 +89,12 @@ function webview2FilePaths(webview: WebView2Bridge, files: File[]): Promise<stri
     }, WEBVIEW2_DROP_TIMEOUT_MS);
     webview.addEventListener("message", onMessage);
     try {
-      webview.postMessageWithAdditionalObjects?.({ [WEBVIEW2_DROP_KEY]: id }, files);
+      // A string, not an object: wry's own WebMessageReceived handler runs
+      // first and calls `TryGetWebMessageAsString`, which fails on an object
+      // message, and the host's handler then never answered (a timeout after
+      // 10 s on Windows). Tauri reads this string as a malformed invoke and
+      // ignores it with a console line; the host's handler still sees it.
+      webview.postMessageWithAdditionalObjects?.(JSON.stringify({ [WEBVIEW2_DROP_KEY]: id }), files);
     } catch {
       finish();
       reject(new Error(unavailable));
